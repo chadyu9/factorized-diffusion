@@ -1,0 +1,5 @@
+# Virtual environments
+**/venv
+**/__pycache__
+**egg**
+**.mp4**
