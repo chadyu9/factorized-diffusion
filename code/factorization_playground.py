@@ -64,19 +64,20 @@ def signal_factorization(latents):
 
     return low, high
 
-for t in scheduler.timesteps:
-    # Factorize the Latents
-    low, high = signal_factorization(latents)
+with torch.no_grad():
+  for t in scheduler.timesteps:
+      # Factorize the Latents
+      low, high = signal_factorization(latents)
 
-    # Get the noise predictions from the UNet
-    noise_pred_low = unet(low, t, encoder_hidden_states=text_embed1).sample
-    noise_pred_high = unet(high, t, encoder_hidden_states=text_embed2).sample
+      # Get the noise predictions from the UNet
+      noise_pred_low = unet(low, t, encoder_hidden_states=text_embed1).sample
+      noise_pred_high = unet(high, t, encoder_hidden_states=text_embed2).sample
 
-    # Combine the noise predictions
-    noise_pred = noise_pred_low + noise_pred_high
+      # Combine the noise predictions
+      noise_pred = noise_pred_low + noise_pred_high
 
-    # Denoise the latent
-    latents = scheduler.step(noise_pred, t, latents).prev_sample
+      # Denoise the latent
+      latents = scheduler.step(noise_pred, t, latents).prev_sample
 
 # Decode the latents to an image
 latents = 1 / 0.18215 * latents
