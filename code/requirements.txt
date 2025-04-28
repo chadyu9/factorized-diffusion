@@ -3,4 +3,4 @@ torch
 transformers
 accelerate
 numpy==1.26.4
-PIL
+Pillow
