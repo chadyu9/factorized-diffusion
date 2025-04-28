@@ -17,7 +17,7 @@ vae = pipe.vae
 scheduler = DDIMScheduler.from_pretrained(model_id, subfolder="scheduler")
 
 scheduler.set_timesteps(50)
-latents = torch.randn(1, unet.in_channels, 64, 64)
+latents = torch.randn(1, unet.config.in_channels, 64, 64)
 
 latents = latents.to(device)
 
