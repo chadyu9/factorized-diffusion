@@ -1,130 +1,140 @@
-# Color-Factorized Diffusion with DeepFloyd IF (CUDA-safe version)
-# ------------------------------------------------------------
-# Same functionality as before, now avoids CUDA-specific calls when the
-# installed PyTorch doesn’t support CUDA.
-# ------------------------------------------------------------
-
-from __future__ import annotations
-import importlib
-import torch
+# -----------------------------------------------------------
+#  color_hybrid_if.py
+# -----------------------------------------------------------
+import os, torch, torch.mps
 from diffusers import DiffusionPipeline
-from PIL import Image
-import numpy as np
+from diffusers.utils import pt_to_pil
 
-# ------------------------------------------------------------
-# Configuration
-# ------------------------------------------------------------
-MODEL_ID = "DeepFloyd/IF-I-M-v1.0"  # 64×64 base model
-PROMPT_LUMA = "bee"
-PROMPT_CHROMA = "barn"
-NUM_STEPS = 50
-OUTPUT_PATH = "color_factorized_image.png"
+# ─────────── prompts & params ───────────
+prompt_gray = "a black-and-white painting of a barn"
+prompt_color = "a painting of a bumblebee"
+steps_stage1 = 50
+out_dir = "outputs"
+os.makedirs(out_dir, exist_ok=True)
+# ────────────────────────────────────────
 
-# ------------------------------------------------------------
-# Device & dtype
-# ------------------------------------------------------------
+# ---------- device ----------
+device = (
+    "cuda"
+    if torch.cuda.is_available()
+    else "mps" if torch.backends.mps.is_available() else "cpu"
+)
+dtype = torch.float16 if device == "cuda" else torch.float32
+print(f"Running on {device}  (dtype={dtype})")
+
+# ========== Stage-1 : pixel-space diffusion ==========
+stage_1 = DiffusionPipeline.from_pretrained(
+    "DeepFloyd/IF-I-M-v1.0",
+    variant="fp16" if dtype is torch.float16 else None,
+    torch_dtype=dtype,
+)
+stage_1.to(device)
+stage_1.enable_attention_slicing()
+try:
+    stage_1.enable_xformers_memory_efficient_attention()
+except (ModuleNotFoundError, ValueError):
+    print("xformers not installed – stage-1 uses standard attention.")
 if torch.cuda.is_available():
-    DEVICE = "cuda"
-    DTYPE = torch.float16
-elif torch.backends.mps.is_available():
-    DEVICE = "mps"
-    DTYPE = torch.float32  # MPS doesn’t support fp16 well
-else:
-    DEVICE = "cpu"
-    DTYPE = torch.float32
+    stage_1.enable_model_cpu_offload()
 
-print(f"Running on {DEVICE} (dtype={DTYPE})")
 
-# ------------------------------------------------------------
-# Load DeepFloyd IF stage-1 pipeline
-# ------------------------------------------------------------
-pipe = DiffusionPipeline.from_pretrained(
-    MODEL_ID,
-    variant="fp16" if DTYPE == torch.float16 else None,
-    torch_dtype=DTYPE,
+# ---- helper: pad to full length so all embeds share the same shape ----
+def embed(text: str):
+    ids = stage_1.tokenizer(
+        text,
+        return_tensors="pt",
+        padding="max_length",
+        max_length=stage_1.tokenizer.model_max_length,
+        truncation=True,
+    ).input_ids.to(device)
+    return stage_1.text_encoder(ids)[0]  # (1, L, 4096)
+
+
+text_emb_gray = embed(prompt_gray)
+text_emb_color = embed(prompt_color)
+neg_emb_blank = embed("")  # same shape as positive
+
+# ---- factorized sampling ----
+stage_1.scheduler.set_timesteps(steps_stage1)
+latents = torch.randn(
+    1, stage_1.unet.config.in_channels, 64, 64, device=device, dtype=dtype
 )
 
-# Optional memory-savers ------------------------------------------------------
-if importlib.util.find_spec("xformers") is not None:
-    try:
-        pipe.enable_xformers_memory_efficient_attention()
-        print("xformers found – enabled memory-efficient attention.")
-    except Exception as e:
-        print(f"xformers present but couldn’t be enabled ({e}). Continuing without it.")
-else:
-    print(
-        "xformers not installed – running with standard attention. To install: pip install xformers"
-    )
-
-# Move pipeline to the chosen device and optionally enable CPU-offload
-if DEVICE == "cuda":
-    pipe.to("cuda")
-    # Only call CPU-offload when CUDA is actually available
-    pipe.enable_model_cpu_offload()
-else:
-    pipe.to(DEVICE)
-
-unet = pipe.unet
-scheduler = pipe.scheduler
-
-# ------------------------------------------------------------
-# Encode prompts (on correct device)
-# ------------------------------------------------------------
 with torch.inference_mode():
-    text_ids_luma = pipe.tokenizer(PROMPT_LUMA, return_tensors="pt").input_ids.to(
-        DEVICE
+    for t in stage_1.scheduler.timesteps:
+        eps_g = stage_1.unet(latents, t, encoder_hidden_states=text_emb_gray).sample
+        eps_c = stage_1.unet(latents, t, encoder_hidden_states=text_emb_color).sample
+        f_gray = eps_g.mean(dim=1, keepdim=True).expand_as(eps_g)
+        f_color = eps_c - eps_c.mean(dim=1, keepdim=True)
+        latents = stage_1.scheduler.step(f_gray + f_color, t, latents).prev_sample
+
+rgb64 = (latents[:, :3].clamp(-1, 1) + 1) / 2
+image_64 = pt_to_pil(rgb64)[0]
+image_64.save(f"{out_dir}/stage1_64.png")
+print("stage-1 saved ➜ outputs/stage1_64.png")
+
+if device == "mps":
+    torch.mps.empty_cache()
+
+# ========== Stage-2 : 256 × 256 up-sampler ==========
+print("\nAttempting Stage-2 (256×256 up-sampler)…")
+try:
+    stage_2 = DiffusionPipeline.from_pretrained(
+        "DeepFloyd/IF-II-M-v1.0",
+        text_encoder=None,
+        variant="fp16" if dtype is torch.float16 else None,
+        torch_dtype=dtype,
     )
-    text_ids_chroma = pipe.tokenizer(PROMPT_CHROMA, return_tensors="pt").input_ids.to(
-        DEVICE
-    )
-    text_embed_luma = pipe.text_encoder(text_ids_luma)[0].to(DEVICE)
-    text_embed_chroma = pipe.text_encoder(text_ids_chroma)[0].to(DEVICE)
+    stage_2.to(device)
+    stage_2.enable_attention_slicing()
+    if torch.cuda.is_available():
+        stage_2.enable_model_cpu_offload()
+    try:
+        stage_2.enable_xformers_memory_efficient_attention()
+    except (ModuleNotFoundError, ValueError):
+        print("xformers not installed – stage-2 uses standard attention.")
 
+    image_256 = stage_2(
+        image=image_64,
+        prompt_embeds=text_emb_gray,
+        negative_prompt_embeds=neg_emb_blank,  # same shape
+        num_inference_steps=30,
+        output_type="pil",
+    ).images[0]
+    image_256.save(f"{out_dir}/stage2_256.png")
+    print("stage-2 saved ➜ outputs/stage2_256.png")
+except Exception as e:
+    print(f"Stage-2 skipped ({e}).")
+    image_256 = None
 
-# ------------------------------------------------------------
-# Helper: luminance–chroma factorization
-# ------------------------------------------------------------
-@torch.no_grad()
-def color_factorization(x: torch.Tensor):
-    rgb = x[:, :3]
-    extra = x[:, 3:] if x.shape[1] > 3 else None
-    r, g, b = rgb[:, 0:1], rgb[:, 1:2], rgb[:, 2:3]
-    y = 0.299 * r + 0.587 * g + 0.114 * b
-    y_rgb = torch.cat([y, y, y], dim=1)
-    chroma = rgb - y_rgb
-    if extra is not None:
-        y_rgb = torch.cat([y_rgb, extra], dim=1)
-        chroma = torch.cat([chroma, torch.zeros_like(extra)], dim=1)
-    return y_rgb, chroma
+# ========== Stage-3 : 1024 × 1024 up-scaler ==========
+if image_256 is not None:
+    print("\nAttempting Stage-3 (x4 up-scaler)…")
+    try:
+        safety = {
+            "feature_extractor": stage_1.feature_extractor,
+            "safety_checker": stage_1.safety_checker,
+            "watermarker": stage_1.watermarker,
+        }
+        stage_3 = DiffusionPipeline.from_pretrained(
+            "stabilityai/stable-diffusion-x4-upscaler", torch_dtype=dtype, **safety
+        )
+        stage_3.to(device)
+        stage_3.enable_attention_slicing()
+        if torch.cuda.is_available():
+            stage_3.enable_model_cpu_offload()
+        try:
+            stage_3.enable_xformers_memory_efficient_attention()
+        except (ModuleNotFoundError, ValueError):
+            print("xformers not installed – stage-3 uses standard attention.")
 
-
-# ------------------------------------------------------------
-# Denoising loop
-# ------------------------------------------------------------
-@torch.no_grad()
-def run_color_factorized_diffusion():
-    scheduler.set_timesteps(NUM_STEPS, device=DEVICE)
-    x = torch.randn(
-        1,
-        unet.config.in_channels,
-        unet.config.sample_size,
-        unet.config.sample_size,
-        device=DEVICE,
-        dtype=DTYPE,
-    )
-    for t in scheduler.timesteps:
-        y_comp, c_comp = color_factorization(x)
-        pred_y = unet(y_comp, t, encoder_hidden_states=text_embed_luma).sample
-        pred_c = unet(c_comp, t, encoder_hidden_states=text_embed_chroma).sample
-        x = scheduler.step(pred_y + pred_c, t, x).prev_sample
-    return x[:, :3]
-
-
-# ------------------------------------------------------------
-# Decode & save result
-# ------------------------------------------------------------
-final_rgb = run_color_factorized_diffusion()
-image = (final_rgb / 2 + 0.5).clamp(0, 1)
-image = image.squeeze(0).cpu().permute(1, 2, 0).numpy()
-Image.fromarray((image * 255).astype(np.uint8)).save(OUTPUT_PATH)
-print(f"Image saved to {OUTPUT_PATH}")
+        image_1k = stage_3(
+            image=image_256,
+            prompt=prompt_color,
+            num_inference_steps=40,
+            guidance_scale=0,
+        ).images[0]
+        image_1k.save(f"{out_dir}/stage3_1024.png")
+        print("stage-3 saved ➜ outputs/stage3_1024.png")
+    except Exception as e:
+        print(f"Stage-3 skipped ({e}).")
