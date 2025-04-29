@@ -29,8 +29,8 @@ stage1_sched = stage1_pipe.scheduler
 stage1_sched.set_timesteps(num_steps)
 
 # prompts
-prompt1 = "a photo of an old man"
-prompt2 = "a photo of a rabbit"
+prompt1 = "a photo of a rabbit"
+prompt2 = "a photo of an old man"
 
 # build prompt embeddings (with CFG)
 pe1, ne1 = stage1_pipe.encode_prompt(prompt1, do_classifier_free_guidance=guidance)
@@ -166,32 +166,6 @@ img_ii = (stage2_output / 2 + 0.5).clamp(0, 1)
 arr_ii = (img_ii[0].cpu().permute(1, 2, 0).numpy() * 255).round().astype(np.uint8)
 Image.fromarray(arr_ii).save("if_stage_II.png")
 
-# ────────────────────────────────────────────────────────────────
-# 3) Official Stage III: 256→1024 x4 upscaler
-# ────────────────────────────────────────────────────────────────
-# carry over safety modules from Stage I
-safety = {
-    "feature_extractor": stage1_pipe.feature_extractor,
-    "safety_checker": stage1_pipe.safety_checker,
-    "watermarker": stage1_pipe.watermarker,
-}
-stage3 = DiffusionPipeline.from_pretrained(
-    "stabilityai/stable-diffusion-x4-upscaler",
-    token=True,
-    torch_dtype=torch.float32,
-    **safety
-).to(device)
-
-with torch.no_grad():
-    stage3_images = stage3(
-        prompt=prompt1,  # final prompt
-        image=stage2_output,  # B×3×256×256
-        noise_level=100,  # default noise for x4 upscaling
-        generator=torch.Generator(device).manual_seed(0),
-    ).images  # a list of PIL Images
-
-# save Stage III result
-stage3_images[0].save("if_stage_III.png")
 
 print(
     "All stages complete: saved if_stage_I_hybrid.png, if_stage_II.png, if_stage_III.png"
