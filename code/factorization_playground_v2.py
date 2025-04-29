@@ -29,8 +29,8 @@ stage1_sched = stage1_pipe.scheduler
 stage1_sched.set_timesteps(num_steps)
 
 # prompts
-prompt1 = "a photo of a rabbit"
-prompt2 = "a photo of an old man"
+prompt1 = "a photo of a stadium"
+prompt2 = "a photo of a car"
 
 # build prompt embeddings (with CFG)
 pe1, ne1 = stage1_pipe.encode_prompt(prompt1, do_classifier_free_guidance=guidance)
@@ -100,6 +100,43 @@ def spatial_frequency_factorization(
     return high, low
 
 
+def motion_blur_factorization(x: torch.Tensor, blur_length: int = 7):
+    """
+    Factorizes image(s) into motion blurred and residual components using a diagonal motion blur kernel.
+
+    Args:
+        x (torch.Tensor): Input image tensor of shape (C, H, W) or (B, C, H, W).
+        blur_length (int): Size of the square diagonal blur kernel. Default is 7.
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor]: (motion_blurred, residual), both same shape as input.
+    """
+
+    # Ensure batch dimension
+    if x.dim() == 3:
+        x = x.unsqueeze(0)  # Shape: (1, C, H, W)
+
+    B, C, H, W = x.shape
+
+    # Create a diagonal blur kernel
+    kernel = torch.zeros(1, 1, blur_length, blur_length, device=x.device)
+    for i in range(blur_length):
+        kernel[0, 0, i, i] = 1.0 / blur_length  # normalized diagonal
+
+    # Expand for depthwise convolution: (C, 1, kH, kW)
+    kernel = kernel.expand(C, 1, blur_length, blur_length)
+
+    # Apply depthwise convolution
+    motion_blurred = F.conv2d(x, kernel, padding="same", groups=C)
+
+    residual = x - motion_blurred
+
+    return motion_blurred, residual
+
+
+# Specify which hybrid factorization to use
+hybrid_factorization = "motion"
+
 # initialize pixel-space noise
 latents = torch.randn(1, stage1_unet.config.in_channels, H, W, device=device)
 latents = latents * stage1_sched.init_noise_sigma
@@ -130,9 +167,18 @@ with torch.no_grad():
         n2_guided = n2_uncond + guidance_scale * (n2_cond - n2_uncond)
 
         # hybrid composition
-        g, _ = spatial_frequency_factorization(n1_guided, 1.0)
-        _, c = spatial_frequency_factorization(n2_guided, 1.0)
-        composite = g + c
+        if hybrid_factorization == "motion":
+            blur, _ = motion_blur_factorization(n1_guided)
+            _, residual = motion_blur_factorization(n2_guided)
+            composite = blur + residual
+        elif hybrid_factorization == "color":
+            h, _ = color_factorization(n1_guided)
+            _, l = color_factorization(n2_guided)
+            composite = h + l
+        elif hybrid_factorization == "spatial":
+            g, _ = spatial_frequency_factorization(n1_guided, 1.0)
+            _, c = spatial_frequency_factorization(n2_guided, 1.0)
+            composite = g + c
 
         # denoising step
         latents = stage1_sched.step(composite, t, latents).prev_sample
@@ -165,6 +211,15 @@ with torch.no_grad():
 img_ii = (stage2_output / 2 + 0.5).clamp(0, 1)
 arr_ii = (img_ii[0].cpu().permute(1, 2, 0).numpy() * 255).round().astype(np.uint8)
 Image.fromarray(arr_ii).save("if_stage_II.png")
+
+# save the hybrid image
+if hybrid_factorization == "motion":
+    # save the motion blurred image
+    blur_ii = motion_blur_factorization(img_ii)[0]
+    arr_m = (blur_ii[0].cpu().permute(1, 2, 0).numpy() * 255).round().astype(np.uint8)
+    Image.fromarray(motion_blur_factorization(blur_ii)[0]).save(
+        "if_stage_II_motion.png"
+    )
 
 
 print(
