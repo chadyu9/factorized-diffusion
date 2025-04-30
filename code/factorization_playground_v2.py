@@ -30,8 +30,8 @@ stage1_sched = stage1_pipe.scheduler
 stage1_sched.set_timesteps(num_steps)
 
 # prompts
-prompt1 = "a photo of a stadium"
-prompt2 = "a photo of a car"
+prompt1 = "a photo of a mountain"
+prompt2 = "a photo of abraham lincoln"
 
 # build prompt embeddings (with CFG)
 pe1, ne1 = stage1_pipe.encode_prompt(prompt1, do_classifier_free_guidance=guidance)
