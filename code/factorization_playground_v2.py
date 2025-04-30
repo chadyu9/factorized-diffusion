@@ -1,6 +1,7 @@
-import torch, torch.fft, numpy as np
+import torch
+import numpy as np
 from PIL import Image
-from diffusers import DiffusionPipeline, DDIMScheduler
+from diffusers import DiffusionPipeline
 import torch.nn.functional as F
 
 # ────────────────────────────────────────────────────────────────
@@ -209,6 +210,7 @@ with torch.no_grad():
 
 # save Stage II result
 img_ii = (stage2_output / 2 + 0.5).clamp(0, 1)
+print(type(img_ii))
 arr_ii = (img_ii[0].cpu().permute(1, 2, 0).numpy() * 255).round().astype(np.uint8)
 Image.fromarray(arr_ii).save("if_stage_II.png")
 
@@ -217,9 +219,7 @@ if hybrid_factorization == "motion":
     # save the motion blurred image
     blur_ii = motion_blur_factorization(img_ii)[0]
     arr_m = (blur_ii[0].cpu().permute(1, 2, 0).numpy() * 255).round().astype(np.uint8)
-    Image.fromarray(motion_blur_factorization(blur_ii)[0]).save(
-        "if_stage_II_motion.png"
-    )
+    Image.fromarray(arr_m).save("if_stage_II_motion.png")
 
 
 print(
