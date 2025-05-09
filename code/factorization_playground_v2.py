@@ -18,30 +18,25 @@ guidance_scale = 5.0  # strength of guidance
 # 1) Custom Stage I: hybrid noise factorization -> 64×64
 # ────────────────────────────────────────────────────────────────
 # Load IF-I and move to device
-print("here1")
 stage1_pipe = DiffusionPipeline.from_pretrained(
     "DeepFloyd/IF-I-M-v1.0",
     token=True,  # authenticated token for gated repo
     torch_dtype=torch.float32,
 ).to(device)
-print("here2")
+print("Loaded stage 1 pipeline!")
 
 stage1_unet = stage1_pipe.unet
 stage1_sched = stage1_pipe.scheduler
 stage1_sched.set_timesteps(num_steps)
 
 # prompts
-prompt2 = "a photo of houseplants" #high freq,
-prompt1 = "a photo of marilyn monroe"
+prompt1 = "a photo of houseplants" #high freq,
+prompt2 = "a photo of marilyn monroe"
 
 # build prompt embeddings (with CFG)
 pe1, ne1 = stage1_pipe.encode_prompt(prompt1, do_classifier_free_guidance=guidance)
 pe2, ne2 = stage1_pipe.encode_prompt(prompt2, do_classifier_free_guidance=guidance)
-print("here3")
-
-
-
-
+print("Done buildnig prompt embeddings.")
 
 # Specify which hybrid factorization to use
 hybrid_factorization = "spatial"
@@ -50,11 +45,11 @@ hybrid_factorization = "spatial"
 latents = torch.randn(1, stage1_unet.config.in_channels, H, W, device=device)
 latents = latents * stage1_sched.init_noise_sigma
 
-print("here4")
+print(f"Beginning stage 1, generating image with... {hybrid_factorization} factorization, and prompts: {prompt1} and {prompt2}")
 # denoising loop with correct guidance
 with torch.no_grad():
     for t in stage1_sched.timesteps:
-        print("timestep", t.item())
+        print("Denoising timestep", t.item())
 
         # duplicate latents
         model_in = torch.cat([latents, latents], dim=0)
@@ -99,6 +94,7 @@ stage1_output = latents.clamp(-1, 1)  # ensure proper range before Stage II
 img_i = (stage1_output / 2 + 0.5).clamp(0, 1)
 arr_i = (img_i[0].cpu().permute(1, 2, 0).numpy() * 255).round().astype(np.uint8)
 Image.fromarray(arr_i).save("if_stage_I_hybrid.png")
+print("Saved stage I hybrid image, as if_stage_I_hybrid.png!")
 
 # ────────────────────────────────────────────────────────────────
 # 2) Official Stage II: 64→256 super-resolution
