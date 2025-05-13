@@ -2,8 +2,22 @@ import torch
 import numpy as np
 from PIL import Image
 from diffusers import DiffusionPipeline
+import argparse
 
 from factorize_helpers import motion_blur_factorization, color_factorization, spatial_frequency_factorization
+
+# ────────────────────────────────────────────────────────────────
+# Parse command line arguments
+# ────────────────────────────────────────────────
+parser = argparse.ArgumentParser(description='Run factorized diffusion with custom prompts')
+parser.add_argument('--prompt1', type=str, default="a photo of houseplants", 
+                    help='First prompt for the factorization')
+parser.add_argument('--prompt2', type=str, default="a photo of marilyn monroe", 
+                    help='Second prompt for the factorization')
+parser.add_argument('--factorization', type=str, choices=['motion', 'color', 'spatial'], 
+                    default='spatial', help='Type of factorization to use')
+
+args = parser.parse_args()
 
 # ────────────────────────────────────────────────────────────────
 # 0) Config
@@ -30,8 +44,8 @@ stage1_sched = stage1_pipe.scheduler
 stage1_sched.set_timesteps(num_steps)
 
 # prompts
-prompt1 = "a photo of houseplants" #high freq,
-prompt2 = "a photo of marilyn monroe"
+prompt1 = args.prompt1 #high freq,
+prompt2 = args.prompt2
 
 # build prompt embeddings (with CFG)
 pe1, ne1 = stage1_pipe.encode_prompt(prompt1, do_classifier_free_guidance=guidance)
@@ -39,7 +53,7 @@ pe2, ne2 = stage1_pipe.encode_prompt(prompt2, do_classifier_free_guidance=guidan
 print("Done buildnig prompt embeddings.")
 
 # Specify which hybrid factorization to use
-hybrid_factorization = "spatial"
+hybrid_factorization = args.factorization
 
 # initialize pixel-space noise
 latents = torch.randn(1, stage1_unet.config.in_channels, H, W, device=device)
