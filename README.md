@@ -4,7 +4,7 @@ A re-implementation of "Factorized Diffusion" by Geng, Park, and Owens (2025), f
 
 ## Introduction
 
-This project reimplements the Factorized Diffusion technique, which enables the creation of hybrid images that change appearance based on viewing distance. The implementation leverages the DeepFloyd IF diffusion model to factorize noise estimates during the denoising process, creating compelling visual illusions without requiring specialized fine-tuning.
+This project reimplements the Factorized Diffusion technique, which enables the creation of hybrid images that change appearance based on viewing distance. The implementation leverages the DeepFloyd IF diffusion model to factorize noise estimates during the denoising process, creating compelling visual illusions without requiring specialized fine-tuning. By decomposing images into frequency components and conditioning these components on different text prompts, we demonstrate how existing generative models can be manipulated to create sophisticated visual effects through careful noise decomposition.
 
 ## Chosen Result
 
